@@ -50,6 +50,9 @@ void Calculate(std::vector<Matrix *> keys, std::vector<Matrix *> values,
       }
       Matrix *outrow = matrix_memory_allocator.Allocate("outrow");
       gpu_sim.MatDiv(num, rowR, outrow);    // (1 x d)
+      gpu_sim.ReleaseMatrix(Qr);
+      gpu_sim.ReleaseMatrix(num);
+      gpu_sim.ReleaseMatrix(rowR);
       // assemble chunks of CHUNK rows in SRAM, then move HBM and concat
       if (chunk == nullptr) {
         chunk = matrix_memory_allocator.Allocate("chunk");
@@ -75,9 +78,6 @@ void Calculate(std::vector<Matrix *> keys, std::vector<Matrix *> values,
         chunk = nullptr;
         chunk_rows = 0;
       }
-      gpu_sim.ReleaseMatrix(Qr);
-      gpu_sim.ReleaseMatrix(num);
-      gpu_sim.ReleaseMatrix(rowR);
       gpu_sim.ReleaseMatrix(outrow);
     }
     gpu_sim.Run(false, &matrix_memory_allocator);
