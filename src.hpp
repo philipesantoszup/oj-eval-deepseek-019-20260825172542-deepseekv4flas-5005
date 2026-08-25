@@ -14,10 +14,14 @@ void Calculate(std::vector<Matrix *> keys, std::vector<Matrix *> values,
   }
   for (size_t j = 0; j < n; ++j) gpu_sim.Transpose(keys[j], kInSharedMemory);
 
+  constexpr size_t CHUNK = 3; // rows of the answer assembled together
+
   for (size_t i = 0; i < n; ++i) {
     Matrix *Q = rater.GetNextQuery();       // HBM, (m x d)
     const size_t m = i + 1;
     Matrix *answer = nullptr;               // answer built in HBM
+    Matrix *chunk = nullptr;                // current SRAM row-chunk
+    size_t chunk_rows = 0;
     for (size_t r = 0; r < m; ++r) {
       // row of Q: extract from HBM, drop into SRAM
       Matrix *Qr = matrix_memory_allocator.Allocate("Qr");
@@ -35,7 +39,7 @@ void Calculate(std::vector<Matrix *> keys, std::vector<Matrix *> values,
         if (j == 0) { rowR = matrix_memory_allocator.Allocate("rowR"); gpu_sim.Copy(e, rowR, kInSharedMemory); }
         else { Matrix *r2 = matrix_memory_allocator.Allocate("r2"); gpu_sim.MatAdd(rowR, e, r2); gpu_sim.ReleaseMatrix(rowR); rowR = r2; }
         Matrix *t = matrix_memory_allocator.Allocate("t");
-        gpu_sim.MatMul(e, values[j], t);    // (1 x 1) x (1 x d) -> (1 x d)
+        gpu_sim.MatMul(e, values[j], t);    // e * V_j  (1 x d)
         Matrix *n2 = matrix_memory_allocator.Allocate("n2");
         gpu_sim.MatAdd(num, t, n2);
         gpu_sim.ReleaseMatrix(num);
@@ -46,15 +50,30 @@ void Calculate(std::vector<Matrix *> keys, std::vector<Matrix *> values,
       }
       Matrix *outrow = matrix_memory_allocator.Allocate("outrow");
       gpu_sim.MatDiv(num, rowR, outrow);    // (1 x d)
-      gpu_sim.MoveMatrixToGpuHbm(outrow);   // -> HBM
-      if (r == 0) {
-        answer = matrix_memory_allocator.Allocate("answer");
-        gpu_sim.Copy(outrow, answer, kInGpuHbm);
+      // assemble chunks of CHUNK rows in SRAM, then move HBM and concat
+      if (chunk == nullptr) {
+        chunk = matrix_memory_allocator.Allocate("chunk");
+        gpu_sim.Copy(outrow, chunk, kInSharedMemory);
       } else {
-        Matrix *na = matrix_memory_allocator.Allocate("na");
-        gpu_sim.Concat(answer, outrow, na, 0, kInGpuHbm);
-        gpu_sim.ReleaseMatrix(answer);
-        answer = na;
+        Matrix *cn = matrix_memory_allocator.Allocate("cn");
+        gpu_sim.Concat(chunk, outrow, cn, 0, kInSharedMemory);
+        gpu_sim.ReleaseMatrix(chunk);
+        chunk = cn;
+      }
+      ++chunk_rows;
+      if (chunk_rows == CHUNK || r + 1 == m) {
+        gpu_sim.MoveMatrixToGpuHbm(chunk);  // chunk now in HBM
+        if (answer == nullptr) {
+          answer = chunk;
+        } else {
+          Matrix *na = matrix_memory_allocator.Allocate("na");
+          gpu_sim.Concat(answer, chunk, na, 0, kInGpuHbm);
+          gpu_sim.ReleaseMatrix(answer);
+          gpu_sim.ReleaseMatrix(chunk);
+          answer = na;
+        }
+        chunk = nullptr;
+        chunk_rows = 0;
       }
       gpu_sim.ReleaseMatrix(Qr);
       gpu_sim.ReleaseMatrix(num);
