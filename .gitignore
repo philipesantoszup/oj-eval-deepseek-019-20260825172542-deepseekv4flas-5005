@@ -1,0 +1,5 @@
+build/
+gccbin/
+tmpx/
+data
+.wtest*
